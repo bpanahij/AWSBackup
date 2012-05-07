@@ -1,0 +1,100 @@
+#!/usr/bin/php -q
+<?php
+$EC2_HOME="/opt/aws/apitools/ec2";
+
+date_default_timezone_set('America/Chicago');
+if(sizeof($argv) != 3) {
+	die("Usage: {$argv[0]} volume-id total-backups-to-keep\nExample: {$argv[0]} vol-45fa172c 100\n");
+}
+
+$Snapshots = array(); //Snapshot ID => Created Timestamp
+
+$data = `$EC2_HOME/bin/ec2-describe-snapshots -K /home/ec2-user/pk-XXXXXXXXXXXXXXXXX.pem -C /home/ec2-user/cert-XXXXXXXXXXXXXXXXXX.pem`;
+$data = split("\n", $data);
+foreach($data as $row) {
+	if(trim($row) == '') continue;
+	list($junk,$SnapshotId,$VolumeId,$Status,$Created,$Progress) = split("\t", $row);
+	echo "Checking: $SnapshotId";
+
+	if($VolumeId == $argv[1] && $Status == 'completed') {
+		echo " - ".date('m/d/Y g:iA', strtotime($Created))." ";
+		$Snapshots[$SnapshotId] = strtotime($Created);
+	}
+	echo "\n";
+}
+
+$Keep = PruneBackups($Snapshots, $argv[2]);
+
+//FYI: Date/time of backups to be kept.
+echo "Keeping the following:\n";
+arsort($Keep);
+foreach($Keep as $id => $date) {
+	echo date('m/d/Y hA', $date)."\n<br/>";
+}
+
+//Delete the ones not in $Keep
+foreach($Snapshots as $id => $date) {
+	if(!isset($Keep[$id])) {
+		echo "Kill $id - ".date('m/d/Y hA', $date)."\n";
+		echo `$EC2_HOME/bin/ec2-delete-snapshot -K /home/ec2-user/pk-XXXXXXXXXXXXXXXXXX.pem -C /home/ec2-user/cert-XXXXXXXXXXXXXXXXXX.pem $id`;
+	}
+}
+
+/*
+   We will keep 1/4 of the total requested backups from the last 24 hours, keeping all of the most recent.
+   We will keep 1/2 of the total requested backups from the last 30 days, one per day.
+   We will keep 1/4 of the total requested backups from older than 30 days, one per week.
+
+   Any left over will go to the newest backups available.
+ */
+function PruneBackups($Snapshots, $Total, $Now=NULL) {
+	if($Now === NULL) $Now = time();
+
+	$ret = $Snapshots;
+	$Remaining = $Total;
+	arsort($Snapshots);
+
+	$UsedDays = array();
+	$UsedWeeks = array();
+
+	foreach($Snapshots as $id => $Created) {
+		if($Created >= strtotime('-1 day', $Now)) {
+			if($Remaining > $Total * 0.65) {
+				$UsedDays[date('Y-m-d', $Created)] = true;
+				$UsedWeeks[date('Y-W', $Created)] = true;
+				$Remaining--;
+				continue;
+			}
+		}
+
+		if($Created >= strtotime('-30 days', $Now)) {
+			if($Remaining > $Total * 0.25 && !isset($UsedDays[date('Y-m-d', $Created)])) {
+				$UsedDays[date('Y-m-d', $Created)] = true;
+				$UsedWeeks[date('Y-W', $Created)] = true;
+				$Remaining--;
+				continue;
+			}
+		}
+
+		if($Remaining > 0 && !isset($UsedWeeks[date('Y-W', $Created)])) {
+			$UsedWeeks[date('Y-W', $Created)] = true;
+			$Remaining--;
+			continue;
+		}
+
+		unset($ret[$id]);
+	}
+
+	arsort($Snapshots);
+	foreach($Snapshots as $id => $Created) {
+		if(!isset($ret[$id])) {
+			$ret[$id] = $Created;
+			$Remaining--;
+			if($Remaining <= 0)
+				break;
+		}
+	}
+
+	return $ret;
+}
+?> 

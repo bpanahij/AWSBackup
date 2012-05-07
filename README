@@ -1,0 +1,4 @@
+# AWS Backup Plan
+## A simple Command line driven AWS backup script written in PHP to run from a cron job 
+
+The purpose of this script is to perform (hourly) periodic backups of some EC2 EBS volume, and to keep some subset of those backups representing a useful set of times and dates for rolling back or diagnosing issues.
